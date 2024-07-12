@@ -9,6 +9,7 @@ from typing import Optional
 from urllib.parse import urlsplit
 
 import requests
+from flask import Flask
 
 try:
     import re2 as re
@@ -18,6 +19,8 @@ except ImportError:
 import telegram.error
 from telegram import Update, InputMediaDocument, InputMediaAnimation, constants, Bot, BotCommand, BotCommandScopeChat
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, PicklePersistence
+
+app = Flask(__name__)  # Flask app for health check
 
 BOT_TOKEN = Bot(token=os.environ.get('token'))
 DEVELOPER_ID = 366858436
@@ -168,90 +171,72 @@ def error_handler(update: object, context: CallbackContext) -> None:
     # traceback.format_exception returns the usual python message about an exception, but as a
     # list of strings rather than a single string, so we have to join them together.
     tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
-    tb_string = ''.join(tb_list)
+    tb_string = "".join(tb_list)
 
-    # Build the message with some markup and additional information about what happened.
+    # Build the message with some markup, to give it a little polish.
     update_str = update.to_dict() if isinstance(update, Update) else str(update)
     message = (
-        f'#error_report\n'
-        f'An exception was raised in runtime\n'
-        f'<pre>update = {html.escape(json.dumps(update_str, indent=2, ensure_ascii=False))}'
-        '</pre>\n\n'
-        f'<pre>context.chat_data = {html.escape(str(context.chat_data))}</pre>\n\n'
-        f'<pre>context.user_data = {html.escape(str(context.user_data))}</pre>\n\n'
-        f'<pre>{html.escape(tb_string)}</pre>'
+        f"An exception was raised while handling an update\n"
+        f"<pre>update = {html.escape(json.dumps(update_str, indent=2, ensure_ascii=False))}"
+        "</pre>\n\n"
+        f"<pre>{html.escape(tb_string)}</pre>"
     )
 
-    # send the message
+    # Finally, send the message
     try:
         context.bot.send_message(chat_id=DEVELOPER_ID, text=message, parse_mode=telegram.ParseMode.HTML)
-    except telegram.error.BadRequest as excp:
-        if 'Entity too large' in str(excp):
-            with StringIO() as output:
-                output.write(message)
-                output.seek(0)
-                context.bot.send_document(chat_id=DEVELOPER_ID, document=output, filename='error.html')
-        else:
-            raise
+    except telegram.error.TelegramError as ex:
+        logger.error(f'Error while sending error message: {ex}')
+        return
+
+def stats_command(update: Update, context: CallbackContext) -> None:
+    """Send a message when the /stats command is issued."""
+    stats = context.bot_data['stats']
+    update.message.reply_text(
+        f'Files downloaded: {stats["media_downloaded"]}\n'
+        f'Errors: {stats["errors"]}'
+    )
+
+def help_command(update: Update, context: CallbackContext) -> None:
+    """Send a message when the /help command is issued."""
+    update.message.reply_text('Send me tweet links and I will reply with any media I can find')
+
+def command_unknown(update: Update, context: CallbackContext) -> None:
+    """Send a message when the user sends an unknown command."""
+    update.message.reply_text('Sorry, I didn\'t understand that command.')
 
 def main() -> None:
-    # Load data persistence
-    persistence = PicklePersistence('bot_data')
+    """Start the bot."""
+    persistence = PicklePersistence('bot_data', single_file=False)
 
     # Create the Updater and pass it your bot's token.
-    updater = Updater(BOT_TOKEN, persistence=persistence)
+    updater = Updater(BOT_TOKEN.token, persistence=persistence, use_context=True)
 
     # Get the dispatcher to register handlers
     dispatcher = updater.dispatcher
 
-    # on different commands - answer in Telegram
-    dispatcher.add_handler(CommandHandler("start", start_command))
-    dispatcher.add_handler(CommandHandler("help", help_command))
+    # Register /stats command
     dispatcher.add_handler(CommandHandler("stats", stats_command))
 
-    # on non command text messages
-    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, process_tweet, run_async=True))
+    # on noncommand i.e message - send tweet link message on Telegram
+    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, tweet_handler))
+    
+    # Register an unknown command handler
+    dispatcher.add_handler(MessageHandler(Filters.command, command_unknown))
 
     # log all errors
     dispatcher.add_error_handler(error_handler)
 
+    updater.job_queue.run_repeating(save_stats, interval=constants.DAY)
+
     # Start the Bot
     updater.start_polling()
-
-    # Run the bot until you press Ctrl-C or the process receives SIGINT, SIGTERM or SIGABRT
     updater.idle()
 
-def start_command(update: Update, context: CallbackContext) -> None:
-    """Send a message when the command /start is issued."""
-    update.message.reply_text('Hi!')
-
-def help_command(update: Update, context: CallbackContext) -> None:
-    """Send a message when the command /help is issued."""
-    update.message.reply_text('Help!')
-
-def stats_command(update: Update, context: CallbackContext) -> None:
-    """Send a message with the bot's statistics."""
-    update.message.reply_text(f"Media downloaded: {context.bot_data.get('stats', {}).get('media_downloaded', 0)}")
-
-def process_tweet(update: Update, context: CallbackContext) -> None:
-    """Process tweets from the received message."""
-    tweet_ids = extract_tweet_ids(update)
-    if tweet_ids is None:
-        update.message.reply_text('No valid tweet IDs found.')
-        return
-
-    for tweet_id in tweet_ids:
-        try:
-            tweet_media = scrape_media(tweet_id)
-            if not reply_media(update, context, tweet_media):
-                update.message.reply_text('No supported media found.')
-        except requests.HTTPError as exc:
-            update.message.reply_text(f'HTTP Error: {exc}')
-        except APIException as exc:
-            update.message.reply_text(f'API Exception: {exc}')
-        except Exception as exc:
-            update.message.reply_text(f'An unexpected error occurred: {exc}')
-            log_handling(update, 'error', f'Exception: {exc}')
+@app.route('/health')
+def health():
+    return 'Bot is running'
 
 if __name__ == '__main__':
     main()
+    app.run(host='0.0.0.0', port=8080)
