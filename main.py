@@ -21,7 +21,7 @@ except ImportError:
 import telegram.error
 from telegram import Update, InputMediaDocument, InputMediaAnimation, constants, BotCommand, BotCommandScopeChat
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, PicklePersistence
-BOT_TOKEN = "1750390743:AAE3tPMoY4GuPKNrsrYh33bgMa_qHy6IXM0"  # Your telegram bot token
+BOT_TOKEN = ""  # Your telegram bot token
 DEVELOPER_ID = 366858436
 IS_BOT_PRIVATE = False
 # Enable logging
