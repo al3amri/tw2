@@ -10,6 +10,8 @@ from urllib.parse import urlsplit
 
 import requests
 from flask import Flask
+from keep_alive import keep_alive
+keep_alive()
 
 try:
     import re2 as re
